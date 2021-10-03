@@ -36,6 +36,7 @@ from common.utils import mask_from_lens
 from fastpitch.alignment import b_mas, mas_width1
 from fastpitch.attention import ConvAttention
 from fastpitch.transformer import FFTransformer
+from fastpitch.gst import GST
 
 
 def regulate_len(durations, enc_out, pace: float = 1.0,
@@ -208,6 +209,18 @@ class FastPitch(nn.Module):
             n_mel_channels, 0, symbols_embedding_dim,
             use_query_proj=True, align_query_enc_type='3xconv')
 
+        self.gst = GST(
+            gst_n_layers=6,
+            gst_n_heads=1,
+            n_mel_channels=n_mel_channels,
+            gst_d_head=64,
+            gst_conv1d_filter_size=4 * n_mel_channels,
+            gst_conv1d_kernel_size=3,
+            p_gst_dropout=0.1,
+            p_gst_dropatt=0.1,
+            p_gst_dropemb=0.0,
+        )
+
     def binarize_attention(self, attn, in_lens, out_lens):
         """For training purposes only. Binarizes attention with MAS.
            These will no longer recieve a gradient.
@@ -256,6 +269,10 @@ class FastPitch(nn.Module):
         # Input FFT
         enc_out, enc_mask = self.encoder(inputs, conditioning=spk_emb)
 
+        # GST
+        gst_pred = self.gst(enc_out, input_lens)
+        enc_and_style = enc_out + gst_pred
+
         # Alignment
         text_emb = self.encoder.word_emb(inputs)
 
@@ -265,7 +282,7 @@ class FastPitch(nn.Module):
 
         attn_soft, attn_logprob = self.attention(
             mel_tgt, text_emb.permute(0, 2, 1), mel_lens, attn_mask,
-            key_lens=input_lens, keys_encoded=enc_out, attn_prior=attn_prior)
+            key_lens=input_lens, keys_encoded=enc_and_style, attn_prior=attn_prior)
 
         attn_hard = self.binarize_attention_parallel(
             attn_soft, input_lens, mel_lens)
@@ -277,11 +294,11 @@ class FastPitch(nn.Module):
         assert torch.all(torch.eq(dur_tgt.sum(dim=1), mel_lens))
 
         # Predict durations
-        log_dur_pred = self.duration_predictor(enc_out, enc_mask).squeeze(-1)
+        log_dur_pred = self.duration_predictor(enc_and_style, enc_mask).squeeze(-1)
         dur_pred = torch.clamp(torch.exp(log_dur_pred) - 1, 0, max_duration)
 
         # Predict pitch
-        pitch_pred = self.pitch_predictor(enc_out, enc_mask).permute(0, 2, 1)
+        pitch_pred = self.pitch_predictor(enc_and_style, enc_mask).permute(0, 2, 1)
 
         # Average pitch over characters
         pitch_tgt = average_pitch(pitch_dense, dur_tgt)
@@ -290,11 +307,11 @@ class FastPitch(nn.Module):
             pitch_emb = self.pitch_emb(pitch_tgt)
         else:
             pitch_emb = self.pitch_emb(pitch_pred)
-        enc_out = enc_out + pitch_emb.transpose(1, 2)
+        enc_and_style = enc_and_style + pitch_emb.transpose(1, 2)
 
         # Predict energy
         if self.energy_conditioning:
-            energy_pred = self.energy_predictor(enc_out, enc_mask).squeeze(-1)
+            energy_pred = self.energy_predictor(enc_and_style, enc_mask).squeeze(-1)
 
             # Average energy over characters
             energy_tgt = average_pitch(energy_dense.unsqueeze(1), dur_tgt)
@@ -302,13 +319,13 @@ class FastPitch(nn.Module):
 
             energy_emb = self.energy_emb(energy_tgt)
             energy_tgt = energy_tgt.squeeze(1)
-            enc_out = enc_out + energy_emb.transpose(1, 2)
+            enc_and_style = enc_and_style + energy_emb.transpose(1, 2)
         else:
             energy_pred = None
             energy_tgt = None
 
         len_regulated, dec_lens = regulate_len(
-            dur_tgt, enc_out, pace, mel_max_len)
+            dur_tgt, enc_and_style, pace, mel_max_len)
 
         # Output FFT
         dec_out, dec_mask = self.decoder(len_regulated, dec_lens)

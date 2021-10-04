@@ -212,7 +212,7 @@ class FastPitch(nn.Module):
         self.gst = GST(
             gst_n_layers=6,
             gst_n_heads=1,
-            n_mel_channels=n_mel_channels,
+            n_mel_channels=symbols_embedding_dim,
             gst_d_head=64,
             gst_conv1d_filter_size=4 * n_mel_channels,
             gst_conv1d_kernel_size=3,
@@ -270,7 +270,7 @@ class FastPitch(nn.Module):
         enc_out, enc_mask = self.encoder(inputs, conditioning=spk_emb)
 
         # GST
-        gst_pred = self.gst(enc_out, input_lens)
+        gst_pred, _ = self.gst(enc_out, input_lens)
         enc_and_style = enc_out + gst_pred
 
         # Alignment

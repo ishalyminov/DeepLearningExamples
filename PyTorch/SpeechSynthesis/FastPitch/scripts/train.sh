@@ -2,7 +2,7 @@
 
 export OMP_NUM_THREADS=1
 
-: ${NUM_GPUS:=8}
+: ${NUM_GPUS:=1}
 : ${BATCH_SIZE:=16}
 : ${GRAD_ACCUMULATION:=2}
 : ${OUTPUT_DIR:="./output"}
@@ -95,4 +95,5 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 : ${DISTRIBUTED:="-m torch.distributed.launch --nproc_per_node $NUM_GPUS"}
-python $DISTRIBUTED train.py $ARGS "$@"
+# python $DISTRIBUTED train.py $ARGS "$@"
+python train.py $ARGS "$@"
